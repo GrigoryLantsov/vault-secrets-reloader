@@ -27,8 +27,10 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	appsinformers "k8s.io/client-go/informers/apps/v1"
+	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
+	v1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -36,6 +38,7 @@ const (
 	DeploymentKind  = "Deployment"
 	DaemonSetKind   = "DaemonSet"
 	StatefulSetKind = "StatefulSet"
+	SecretsKind 	= "Secrets"
 
 	SecretReloadAnnotationName = "alpha.vault.security.banzaicloud.io/reload-on-secret-change"
 	ReloadCountAnnotationName  = "alpha.vault.security.banzaicloud.io/secret-reload-count"
@@ -54,6 +57,8 @@ type Controller struct {
 	daemonSetsLister   appslisters.DaemonSetLister
 	statefulSetsLister appslisters.StatefulSetLister
 	statefulSetsSynced cache.InformerSynced
+	secretsLister	   v1listers.SecretLister
+	secretsSynced	   cache.InformerSynced
 
 	// workloadSecrets map[Workload][]string
 	workloadSecrets workloadSecretsStore
@@ -67,6 +72,7 @@ func NewController(
 	deploymentInformer appsinformers.DeploymentInformer,
 	daemonSetInformer appsinformers.DaemonSetInformer,
 	statefulSetInformer appsinformers.StatefulSetInformer,
+	secretsInformer		coreinformers.SecretInformer,
 ) *Controller {
 	controller := &Controller{
 		kubeClient:         kubeClient,
@@ -77,13 +83,15 @@ func NewController(
 		daemonSetsSynced:   daemonSetInformer.Informer().HasSynced,
 		statefulSetsLister: statefulSetInformer.Lister(),
 		statefulSetsSynced: deploymentInformer.Informer().HasSynced,
+		secretsLister:		secretsInformer.Lister(),
+		secretsSynced:      secretsInformer.Informer().HasSynced,
 		workloadSecrets:    newWorkloadSecrets(),
 		secretVersions:     make(map[string]int),
 	}
 
 	logger.Info("Setting up event handlers")
 
-	// Set up event handlers for Deployments, DaemonSets and StatefulSets
+	// Set up event handlers for Deployments, DaemonSets, StatefulSets and Secrets
 	_, _ = deploymentInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    controller.handleObject,
 		UpdateFunc: func(old, new interface{}) { controller.handleObject(new) },
@@ -97,6 +105,12 @@ func NewController(
 	})
 
 	_, _ = statefulSetInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    controller.handleObject,
+		UpdateFunc: func(old, new interface{}) { controller.handleObject(new) },
+		DeleteFunc: controller.handleObjectDelete,
+	})
+
+	_, _ = secretsInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    controller.handleObject,
 		UpdateFunc: func(old, new interface{}) { controller.handleObject(new) },
 		DeleteFunc: controller.handleObjectDelete,
@@ -117,7 +131,7 @@ func (c *Controller) Run(ctx context.Context, reloaderPeriod time.Duration) erro
 	// Wait for the caches to be synced before starting reloader
 	c.logger.Info("Waiting for informer caches to sync")
 
-	if !cache.WaitForCacheSync(ctx.Done(), c.deploymentsSynced, c.daemonSetsSynced, c.statefulSetsSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), c.deploymentsSynced, c.daemonSetsSynced, c.statefulSetsSynced, c.secretsSynced) {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
@@ -150,6 +164,9 @@ func (c *Controller) handleObject(obj interface{}) {
 		workloadData = workload{name: o.Name, namespace: o.Namespace, kind: StatefulSetKind}
 		podTemplateSpec = o.Spec.Template
 
+	case *corev1.Secret:
+		workloadData = workload{name: o.Name, namespace: o.Namespace, kind: SecretsKind}
+		c.collectKindSecrets(workloadData, o)
 	default:
 		// Unsupported workload
 		c.logger.Error("error decoding object, invalid type")
@@ -197,6 +214,10 @@ func (c *Controller) handleObjectDelete(obj interface{}) {
 	case *appsv1.StatefulSet:
 		workloadData = workload{name: o.GetName(), namespace: o.GetNamespace(), kind: StatefulSetKind}
 		podTemplateSpec = o.Spec.Template
+
+	case *corev1.Secret:
+		workloadData = workload{name: o.Name, namespace: o.Namespace, kind: SecretsKind}
+		c.collectKindSecrets(workloadData, o)
 
 	default:
 		c.logger.Error("error decoding object, invalid type")

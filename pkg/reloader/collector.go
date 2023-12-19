@@ -96,6 +96,24 @@ func (c *Controller) collectWorkloadSecrets(workload workload, template corev1.P
 	collectorLogger.Info(fmt.Sprintf("Collected secrets from %s %s/%s", workload.kind, workload.namespace, workload.name))
 }
 
+
+func (c *Controller) collectKindSecrets(workload workload, secret *corev1.Secret) {
+	collectorLogger := c.logger.With(slog.String("worker", "collector"))
+
+	// Collect secrets from different locations
+	vaultSecretPaths := collectSecretsFromSecret(*secret)
+
+	if len(vaultSecretPaths) == 0 {
+		collectorLogger.Debug("No Vault secret paths found in Secret")
+		return
+	}
+	collectorLogger.Debug(fmt.Sprintf("Vault secret paths found: %v", vaultSecretPaths))
+
+	// Add workload and secrets to workloadSecrets map
+	c.workloadSecrets.Store(workload, vaultSecretPaths)
+	collectorLogger.Info(fmt.Sprintf("Collected secrets from %s %s/%s", workload.kind, workload.namespace, workload.name))
+}
+
 func collectSecrets(template corev1.PodTemplateSpec) []string {
 	containers := []corev1.Container{}
 	containers = append(containers, template.Spec.Containers...)
@@ -105,6 +123,17 @@ func collectSecrets(template corev1.PodTemplateSpec) []string {
 	vaultSecretPaths = append(vaultSecretPaths, collectSecretsFromContainerEnvVars(containers)...)
 	vaultSecretPaths = append(vaultSecretPaths, collectSecretsFromAnnotations(template.GetAnnotations())...)
 
+	// Remove duplicates
+	slices.Sort(vaultSecretPaths)
+	return slices.Compact(vaultSecretPaths)
+}
+
+func collectSecretsFromSecret(secret corev1.Secret) []string {
+	// Collect secrets from different locations in a Secret
+	vaultSecretPaths := []string{}
+	for key := range secret.Data {
+		vaultSecretPaths = append(vaultSecretPaths, key)
+	}
 	// Remove duplicates
 	slices.Sort(vaultSecretPaths)
 	return slices.Compact(vaultSecretPaths)

@@ -144,6 +144,19 @@ func (c *Controller) reloadWorkload(workload workload) error {
 		if err != nil {
 			return err
 		}
+		
+	case SecretsKind:
+		secrets, err := c.kubeClient.CoreV1().Secrets(workload.namespace).Get(context.Background(), workload.name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		incrementReloadCountAnnotationSecret(secrets)
+
+		_, err = c.kubeClient.CoreV1().Secrets(workload.namespace).Update(context.Background(), secrets, metav1.UpdateOptions{})
+		if err != nil {
+			return err
+		}
 
 	default:
 		return fmt.Errorf("unknown object type: %s", workload.kind)
@@ -164,4 +177,22 @@ func incrementReloadCountAnnotation(podTemplate *corev1.PodTemplateSpec) {
 	}
 
 	podTemplate.GetAnnotations()[ReloadCountAnnotationName] = version
+}
+
+func incrementReloadCountAnnotationSecret(secret *corev1.Secret) {
+	version := "1"
+
+	if reloadCount := secret.Annotations[ReloadCountAnnotationName]; reloadCount != "" {
+		count, err := strconv.Atoi(reloadCount)
+		if err == nil {
+			count++
+			version = strconv.Itoa(count)
+		}
+	}
+
+	if secret.Annotations == nil {
+		secret.Annotations = make(map[string]string)
+	}
+
+	secret.Annotations[ReloadCountAnnotationName] = version
 }

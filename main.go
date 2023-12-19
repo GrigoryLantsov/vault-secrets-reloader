@@ -137,6 +137,7 @@ func main() {
 		kubeInformerFactory.Apps().V1().Deployments(),
 		kubeInformerFactory.Apps().V1().DaemonSets(),
 		kubeInformerFactory.Apps().V1().StatefulSets(),
+		kubeInformerFactory.Core().V1().Secrets(),
 	)
 
 	kubeInformerFactory.Start(ctx.Done())
